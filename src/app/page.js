@@ -1,32 +1,39 @@
 'use client'
-import { useState } from 'react'
-import { supabase } from '@/lib/supabaseClient'
+import { useRouter } from 'next/navigation'
 
 export default function HomePage() {
-  const [code, setCode] = useState('')
-  const [gameCreated, setGameCreated] = useState(false)
+  const router = useRouter()
 
-  async function handleCreateGame() {
-    const newCode = Math.random().toString(36).substring(2, 7).toUpperCase()
-    const { data, error } = await supabase.from('games').insert([{ code: newCode }]).select()
-    if (error) console.error(error)
-    setCode(newCode)
-    setGameCreated(true)
+  const handleCreateGame = () => {
+    router.push('/create')
+  }
+
+  const handleJoinGame = () => {
+    router.push('/join')
   }
 
   return (
-    <main className="flex flex-col items-center justify-center min-h-screen gap-4 p-8">
-      <h1 className="text-3xl font-bold">Murder Mystery 🕵️‍♀️</h1>
-      {!gameCreated ? (
-        <button onClick={handleCreateGame} className="bg-red-600 text-white px-4 py-2 rounded-lg">
+    <main className="flex flex-col items-center justify-center min-h-screen gap-6 p-8 text-center">
+      <h1 className="text-4xl font-bold mb-2">🩸 Murder Mystery</h1>
+      <p className="text-gray-600 max-w-md">
+        A deadly party game. One of you is the murderer... but who?
+      </p>
+
+      <div className="flex flex-col sm:flex-row gap-4 mt-6">
+        <button
+          onClick={handleCreateGame}
+          className="bg-red-600 text-white px-6 py-3 rounded-lg hover:bg-red-700 transition"
+        >
           Create Game
         </button>
-      ) : (
-        <div>
-          <p>Game created! Share this code:</p>
-          <h2 className="text-2xl font-mono">{code}</h2>
-        </div>
-      )}
+
+        <button
+          onClick={handleJoinGame}
+          className="bg-gray-800 text-white px-6 py-3 rounded-lg hover:bg-gray-900 transition"
+        >
+          Join Game
+        </button>
+      </div>
     </main>
   )
 }
