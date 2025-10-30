@@ -10,54 +10,51 @@ const supabase = createClient(
 
 export default function LobbyPage() {
   const router = useRouter()
-  const params = useParams()
-  const { gameCode } = params
+  const { gameCode } = useParams()
 
   const [user, setUser] = useState(null)
   const [game, setGame] = useState(null)
   const [players, setPlayers] = useState([])
   const [loading, setLoading] = useState(true)
 
-  // Fetch current players for a game
-  const fetchPlayers = async (gameId) => {
-    const { data, error } = await supabase
-      .from('players')
-      .select('*')
-      .eq('game_id', gameId)
-
-    if (error) {
-      console.error('Failed to fetch players:', error)
-      return []
-    }
-    return data
-  }
-
   useEffect(() => {
-    let channel
-    const fetchUserAndGame = async () => {
+    let playersChannel
+    let gameChannel
+
+    const fetchPlayers = async (gameId) => {
+      const { data, error } = await supabase
+        .from('players')
+        .select('*')
+        .eq('game_id', gameId)
+      if (error) {
+        console.error('Failed to fetch players:', error)
+        return []
+      }
+      return data || []
+    }
+
+    const initLobby = async () => {
       // 1️⃣ Get current user
       const { data: userData, error: userError } = await supabase.auth.getUser()
       if (userError || !userData.user) return router.push('/')
-
       setUser(userData.user)
 
-      // 2️⃣ Get game by code
+      // 2️⃣ Get game
       const { data: gameData, error: gameError } = await supabase
         .from('games')
         .select('*')
         .eq('code', gameCode)
         .single()
       if (gameError || !gameData) return router.push('/home')
-
       setGame(gameData)
 
-      // 3️⃣ Get initial players
+      // 3️⃣ Fetch initial players
       const initialPlayers = await fetchPlayers(gameData.id)
       setPlayers(initialPlayers)
       setLoading(false)
 
-      // 4️⃣ Setup realtime subscription for this game
-      channel = supabase
+      // 4️⃣ Subscribe to player changes
+      playersChannel = supabase
         .channel(`players-game-${gameData.id}`)
         .on(
           'postgres_changes',
@@ -77,21 +74,40 @@ export default function LobbyPage() {
             })
           }
         )
-        .subscribe()
+      await playersChannel.subscribe()
+
+      // 5️⃣ Subscribe to game status updates for auto-redirect
+      gameChannel = supabase
+        .channel(`game-status-${gameData.id}`)
+        .on(
+          'postgres_changes',
+          { event: 'UPDATE', schema: 'public', table: 'games', filter: `id=eq.${gameData.id}` },
+          (payload) => {
+            console.log('Game status update:', payload) // debug
+            if (payload.new.status === 'started') {
+              router.push(`/game/${gameData.code}`)
+            }
+          }
+        )
+      await gameChannel.subscribe()
     }
 
-    fetchUserAndGame()
+    initLobby()
 
-    // cleanup subscription on unmount
     return () => {
-      if (channel) supabase.removeChannel(channel)
+      if (playersChannel) supabase.removeChannel(playersChannel)
+      if (gameChannel) supabase.removeChannel(gameChannel)
     }
   }, [gameCode, router])
 
   const handleStartGame = async () => {
     if (!game) return
-    await supabase.from('games').update({ status: 'started' }).eq('id', game.id)
-    alert('Game started!') // placeholder for now
+    const { error } = await supabase
+      .from('games')
+      .update({ status: 'started' })
+      .eq('id', game.id)
+
+    if (error) console.error('Failed to start game:', error)
   }
 
   if (loading) return <p className="p-4">Loading lobby...</p>
@@ -132,3 +148,4 @@ export default function LobbyPage() {
     </main>
   )
 }
+
