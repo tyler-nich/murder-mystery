@@ -121,25 +121,50 @@ export default function LobbyPage() {
     }
   }, [game, router])
 
-  // 3️⃣ Start game (host only)
   const handleStartGame = async () => {
-    if (!game) return
+    if (!game) return;
 
-    console.log('🕹 Starting game...')
-    const { error } = await supabase
-      .from('games')
-      .update({ status: 'started' })
-      .eq('id', game.id)
+    // 1️⃣ Fetch all players
+    const { data: playersData, error: playersError } = await supabase
+      .from('players')
+      .select('*')
+      .eq('game_id', game.id);
 
-    if (error) {
-      console.error('❌ Failed to start game:', error)
-      return
+    if (playersError || !playersData?.length) {
+      console.error('No players found', playersError);
+      return;
     }
 
-    // Host redirects immediately to avoid race condition
-    console.log('✅ Host started the game — redirecting now...')
-    router.push(`/game/${game.code}`)
-  }
+    // 2️⃣ Pick a random murderer
+    const randomIndex = Math.floor(Math.random() * playersData.length);
+    const murderer = playersData[randomIndex];
+
+    // 3️⃣ Update murderer in players table
+    const { error: murdererError } = await supabase
+      .from('players')
+      .update({ is_murderer: true })
+      .eq('id', murderer.id);
+
+    if (murdererError) {
+      console.error('Failed to assign murderer:', murdererError);
+      return;
+    }
+
+    // 4️⃣ Update game status
+    const { error: gameError } = await supabase
+      .from('games')
+      .update({ status: 'started', started_at: new Date().toISOString() })
+      .eq('id', game.id);
+
+    if (gameError) {
+      console.error('Failed to start game:', gameError);
+      return;
+    }
+
+    // 5️⃣ Redirect host immediately to the game page
+    router.push(`/game/${game.code}`);
+  };
+
 
   if (loading) return <p className="p-4">Loading lobby...</p>
 
