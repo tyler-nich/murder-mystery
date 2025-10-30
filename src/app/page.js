@@ -1,39 +1,70 @@
 'use client'
-import { useRouter } from 'next/navigation'
+import { useState } from 'react'
+import { createClient } from '@supabase/supabase-js'
 
-export default function HomePage() {
-  const router = useRouter()
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+)
 
-  const handleCreateGame = () => {
-    router.push('/create')
-  }
+export default function LoginPage() {
+  const [email, setEmail] = useState('')
+  const [name, setName] = useState('')
+  const [message, setMessage] = useState('')
 
-  const handleJoinGame = () => {
-    router.push('/join')
+  const handleLogin = async (e) => {
+    e.preventDefault()
+    if (!email || !name) {
+      setMessage('Please enter both your name and email.')
+      return
+    }
+
+    // Save the name locally (we’ll use it when joining a game)
+    localStorage.setItem('playerName', name)
+
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: {
+        emailRedirectTo: `${window.location.origin}/home`,
+      },
+    })
+
+    if (error) setMessage(error.message)
+    else setMessage('Check your email for a magic link to log in!')
   }
 
   return (
-    <main className="flex flex-col items-center justify-center min-h-screen gap-6 p-8 text-center">
-      <h1 className="text-4xl font-bold mb-2">🩸 Murder Mystery</h1>
-      <p className="text-gray-600 max-w-md">
-        A deadly party game. One of you is the murderer... but who?
-      </p>
-
-      <div className="flex flex-col sm:flex-row gap-4 mt-6">
+    <main className="flex flex-col items-center justify-center min-h-screen p-8">
+      <h1 className="text-3xl font-bold mb-4">Murder Mystery</h1>
+      <form
+        onSubmit={handleLogin}
+        className="flex flex-col gap-4 w-full max-w-sm"
+      >
+        <input
+          type="text"
+          placeholder="Your name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          className="border rounded p-2"
+        />
+        <input
+          type="email"
+          placeholder="Your email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          className="border rounded p-2"
+        />
         <button
-          onClick={handleCreateGame}
-          className="bg-red-600 text-white px-6 py-3 rounded-lg hover:bg-red-700 transition"
+          type="submit"
+          className="bg-red-600 text-white py-2 rounded hover:bg-red-700"
         >
-          Create Game
+          Send Magic Link
         </button>
+      </form>
 
-        <button
-          onClick={handleJoinGame}
-          className="bg-gray-800 text-white px-6 py-3 rounded-lg hover:bg-gray-900 transition"
-        >
-          Join Game
-        </button>
-      </div>
+      {message && (
+        <p className="mt-4 text-gray-700 text-center">{message}</p>
+      )}
     </main>
   )
 }
