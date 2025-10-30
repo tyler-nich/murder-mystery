@@ -85,37 +85,47 @@ export default function GamePage() {
   };
 
   return (
-    <main className="p-8 max-w-2xl mx-auto min-h-screen bg-black text-white">
-      <h1 className="text-2xl font-bold mb-6">Game: {gameCode}</h1>
+  <main className="p-8 max-w-2xl mx-auto min-h-screen bg-black text-white">
+    <h1 className="text-2xl font-bold mb-6">Game: {gameCode}</h1>
 
-      <ul className="grid grid-cols-2 gap-4">
-        {players.map(p => {
-          const isSelected = selectedPlayerId === p.id;
-          return (
-            <li
-              key={p.id}
-              className={`
-                border-2 rounded p-2 cursor-pointer
-                ${p.is_dead ? 'border-red-600 text-red-600 cursor-not-allowed' : 'border-white'}
-                ${isSelected ? 'bg-red-800' : ''}
-              `}
-              onClick={() => handleClickPlayer(p)}
-            >
-              {isSelected ? `Kill ${p.name}?` : p.name} {p.is_dead && '💀'}
-            </li>
-          );
-        })}
-      </ul>
+    <ul className="grid grid-cols-2 gap-4">
+      {players.map((p) => {
+        const isSelected = selectedPlayerId === p.id
+        const isSelf = p.user_id === user?.id
+        const isDead = p.is_dead
 
-      {isMurderer && selectedPlayerId && (
-        <button
-          onClick={handleConfirmKill}
-          className="mt-4 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition"
-        >
-          Proceed to Murder
-        </button>
-      )}
-    </main>
+        const isDisabled = isDead || isSelf
+        const canSelect = isMurderer && !isDisabled
+
+        return (
+          <li
+            key={p.id}
+            className={`
+              border-2 rounded p-2 transition
+              ${isDead ? 'border-red-600 text-red-600' : 'border-white'}
+              ${isSelected ? 'bg-red-800' : ''}
+              ${isDisabled ? 'cursor-not-allowed' : canSelect ? 'cursor-pointer hover:bg-gray-800' : ''}
+            `}
+            onClick={() => {
+              if (canSelect) handleClickPlayer(p)
+            }}
+          >
+            {isSelected ? `Kill ${p.name}?` : p.name} {isDead && '💀'}
+            {isSelf && ' (You)'}
+          </li>
+        )
+      })}
+    </ul>
+
+    {isMurderer && selectedPlayerId && (
+      <button
+        onClick={handleConfirmKill}
+        className="mt-4 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition"
+      >
+        Proceed to Murder
+      </button>
+    )}
+  </main>
   );
 }
 
