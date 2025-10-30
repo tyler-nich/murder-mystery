@@ -17,97 +17,128 @@ export default function LobbyPage() {
   const [players, setPlayers] = useState([])
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    let playersChannel
-    let gameChannel
-
-    const fetchPlayers = async (gameId) => {
-      const { data, error } = await supabase
-        .from('players')
-        .select('*')
-        .eq('game_id', gameId)
-      if (error) {
-        console.error('Failed to fetch players:', error)
-        return []
-      }
-      return data || []
+  // 🧩 Helper to fetch players
+  const fetchPlayers = async (gameId) => {
+    const { data, error } = await supabase
+      .from('players')
+      .select('*')
+      .eq('game_id', gameId)
+    if (error) {
+      console.error('Failed to fetch players:', error)
+      return []
     }
+    return data || []
+  }
 
+  // 1️⃣ Initial load: user + game + initial players
+  useEffect(() => {
     const initLobby = async () => {
-      // 1️⃣ Get current user
       const { data: userData, error: userError } = await supabase.auth.getUser()
       if (userError || !userData.user) return router.push('/')
       setUser(userData.user)
 
-      // 2️⃣ Get game
       const { data: gameData, error: gameError } = await supabase
         .from('games')
         .select('*')
         .eq('code', gameCode)
         .single()
+
       if (gameError || !gameData) return router.push('/home')
       setGame(gameData)
 
-      // 3️⃣ Fetch initial players
       const initialPlayers = await fetchPlayers(gameData.id)
       setPlayers(initialPlayers)
       setLoading(false)
-
-      // 4️⃣ Subscribe to player changes
-      playersChannel = supabase
-        .channel(`players-game-${gameData.id}`)
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'players', filter: `game_id=eq.${gameData.id}` },
-          (payload) => {
-            setPlayers((prev) => {
-              switch (payload.eventType) {
-                case 'INSERT':
-                  return [...prev, payload.new]
-                case 'UPDATE':
-                  return prev.map((p) => (p.id === payload.new.id ? payload.new : p))
-                case 'DELETE':
-                  return prev.filter((p) => p.id !== payload.old.id)
-                default:
-                  return prev
-              }
-            })
-          }
-        )
-      await playersChannel.subscribe()
-
-      // 5️⃣ Subscribe to game status updates for auto-redirect
-      gameChannel = supabase
-        .channel(`game-status-${gameData.id}`)
-        .on(
-          'postgres_changes',
-          { event: 'UPDATE', schema: 'public', table: 'games', filter: `id=eq.${gameData.id}` },
-          (payload) => {
-            console.log('Game status update:', payload) // debug
-            if (payload.new.status === 'started') {
-              router.push(`/game/${gameData.code}`)
-            }
-          }
-        )
-      await gameChannel.subscribe()
     }
 
     initLobby()
-
-    return () => {
-      if (playersChannel) supabase.removeChannel(playersChannel)
-      if (gameChannel) supabase.removeChannel(gameChannel)
-    }
   }, [gameCode, router])
 
+  // 2️⃣ Subscribe to realtime updates (runs after `game` is loaded)
+  useEffect(() => {
+    if (!game?.id) return
+
+    console.log('🔗 Subscribing to realtime for game:', game.id)
+
+    const playersChannel = supabase
+      .channel(`players-game-${game.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'players',
+          filter: `game_id=eq.${game.id}`,
+        },
+        (payload) => {
+          setPlayers((prev) => {
+            switch (payload.eventType) {
+              case 'INSERT':
+                return [...prev, payload.new]
+              case 'UPDATE':
+                return prev.map((p) =>
+                  p.id === payload.new.id ? payload.new : p
+                )
+              case 'DELETE':
+                return prev.filter((p) => p.id !== payload.old.id)
+              default:
+                return prev
+            }
+          })
+        }
+      )
+      .subscribe((status) =>
+        console.log('🧩 Players channel subscription:', status)
+      )
+
+    const gameChannel = supabase
+      .channel(`game-status-${game.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'games',
+          filter: `id=eq.${game.id}`,
+        },
+        (payload) => {
+          console.log('📡 Game status update received:', payload)
+          if (payload.new.status === 'started') {
+            console.log('🚀 Redirecting to game page...')
+            router.push(`/game/${payload.new.code}`)
+          }
+        }
+      )
+      .subscribe((status) =>
+        console.log('🧩 Game channel subscription:', status)
+      )
+
+    // ✅ Cleanup on unmount or when game changes
+    return () => {
+      console.log('🧹 Cleaning up channels...')
+      supabase.removeChannel(playersChannel)
+      supabase.removeChannel(gameChannel)
+    }
+  }, [game, router])
+
+  // 3️⃣ Start game (host only)
   const handleStartGame = async () => {
     if (!game) return
+
+    console.log('🕹 Starting game...')
     const { error } = await supabase
       .from('games')
       .update({ status: 'started' })
       .eq('id', game.id)
 
-    if (error) console.error('Failed to start game:', error)
+    if (error) {
+      console.error('❌ Failed to start game:', error)
+      return
+    }
+
+    // Host redirects immediately to avoid race condition
+    console.log('✅ Host started the game — redirecting now...')
+    router.push(`/game/${game.code}`)
   }
 
   if (loading) return <p className="p-4">Loading lobby...</p>
@@ -140,7 +171,11 @@ export default function LobbyPage() {
       <ul className="border rounded p-4 space-y-2">
         {players.map((p) => (
           <li key={p.id} className="flex justify-between">
-            <span className={p.is_dead ? 'line-through text-gray-400' : ''}>{p.name}</span>
+            <span
+              className={p.is_dead ? 'line-through text-gray-400' : ''}
+            >
+              {p.name}
+            </span>
             {p.is_host && <span className="text-sm text-blue-600">(host)</span>}
           </li>
         ))}
@@ -148,4 +183,3 @@ export default function LobbyPage() {
     </main>
   )
 }
-
