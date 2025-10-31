@@ -165,6 +165,9 @@ export default function VotePage() {
               if (updated.voting_ended) {
                 setResultMessage(updated.result_message || '');
                 setVotingEnded(true);
+              } else {
+                // Voting opened for a new round, ensure any polling is stopped
+                if (pollIntervalId) clearInterval(pollIntervalId);
               }
             }
           );
@@ -202,23 +205,25 @@ export default function VotePage() {
 
         setLoading(false);
 
-        // 8) Polling fallback: periodically check for a vote_result until received
-        pollIntervalId = setInterval(async () => {
-          if (!gameData?.id) return;
-          if (votingEnded) return;
-          const { data: latest, error: latestErr } = await supabase
-            .from('game_events')
-            .select('*')
-            .eq('game_id', gameData.id)
-            .eq('type', 'vote_result')
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .maybeSingle();
-          if (!latestErr && latest) {
-            setResultMessage(latest.details ?? '');
-            setVotingEnded(true);
-          }
-        }, 2000);
+        // 8) Polling fallback: only when voting has ended on initial load
+        if (gameData.voting_ended) {
+          pollIntervalId = setInterval(async () => {
+            if (!gameData?.id) return;
+            if (votingEnded) return;
+            const { data: latest, error: latestErr } = await supabase
+              .from('game_events')
+              .select('*')
+              .eq('game_id', gameData.id)
+              .eq('type', 'vote_result')
+              .order('created_at', { ascending: false })
+              .limit(1)
+              .maybeSingle();
+            if (!latestErr && latest) {
+              setResultMessage(latest.details ?? '');
+              setVotingEnded(true);
+            }
+          }, 2000);
+        }
       } catch (err) {
         console.error('Error initializing vote page:', err);
         setLoading(false);
