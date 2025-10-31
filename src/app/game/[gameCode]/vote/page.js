@@ -25,7 +25,6 @@ export default function VotePage() {
 
   useEffect(() => {
     let votesChannel, eventsChannel, gamesChannel;
-    let pollIntervalId;
 
     const init = async () => {
       try {
@@ -171,24 +170,6 @@ export default function VotePage() {
         await gamesChannel.subscribe();
 
         setLoading(false);
-
-        // 8) Polling fallback: periodically check for a vote_result until received
-        pollIntervalId = setInterval(async () => {
-          if (!gameData?.id) return;
-          if (votingEnded) return;
-          const { data: latest, error: latestErr } = await supabase
-            .from('game_events')
-            .select('*')
-            .eq('game_id', gameData.id)
-            .eq('type', 'vote_result')
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .maybeSingle();
-          if (!latestErr && latest) {
-            setResultMessage(latest.details ?? '');
-            setVotingEnded(true);
-          }
-        }, 2000);
       } catch (err) {
         console.error('Error initializing vote page:', err);
         setLoading(false);
@@ -201,7 +182,6 @@ export default function VotePage() {
       if (votesChannel) supabase.removeChannel(votesChannel).catch(() => {});
       if (eventsChannel) supabase.removeChannel(eventsChannel).catch(() => {});
       if (gamesChannel) supabase.removeChannel(gamesChannel).catch(() => {});
-      if (pollIntervalId) clearInterval(pollIntervalId);
 
       // Host-only: prepare next round AFTER leaving the vote room
       // If the round just ended, clear votes and reset game so the room is ready next time
