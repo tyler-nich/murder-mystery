@@ -108,21 +108,23 @@ export default function VotePage() {
           );
         await votesChannel.subscribe();
 
-        // 6) Check for existing vote result (covers late arrivals and reloads)
-        const { data: latestEvent, error: latestEventErr } = await supabase
-          .from('game_events')
-          .select('*')
-          .eq('game_id', gameData.id)
-          .eq('type', 'vote_result')
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle();
+        // 6) Check for existing vote result ONLY if game says voting ended
+        if (gameData.voting_ended) {
+          const { data: latestEvent, error: latestEventErr } = await supabase
+            .from('game_events')
+            .select('*')
+            .eq('game_id', gameData.id)
+            .eq('type', 'vote_result')
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
 
-        if (latestEventErr) {
-          console.error('Error fetching latest game event:', latestEventErr);
-        } else if (latestEvent) {
-          setResultMessage(latestEvent.details ?? '');
-          setVotingEnded(true);
+          if (latestEventErr) {
+            console.error('Error fetching latest game event:', latestEventErr);
+          } else if (latestEvent) {
+            setResultMessage(latestEvent.details ?? '');
+            setVotingEnded(true);
+          }
         }
 
         // 7) Subscribe to game events for voting results (real-time updates)
@@ -167,6 +169,36 @@ export default function VotePage() {
             }
           );
         await gamesChannel.subscribe();
+
+        // 8) If host and previous round ended, reset for new round
+        if (gameData.voting_ended && gameData.host_id === currentUser.id) {
+          try {
+            // Clear votes from previous round
+            const { error: clearVotesErr } = await supabase
+              .from('votes')
+              .delete()
+              .eq('game_id', gameData.id);
+            if (clearVotesErr) {
+              console.error('Error clearing previous votes:', clearVotesErr);
+            }
+
+            // Reset game flags for new round
+            const { error: resetGameErr } = await supabase
+              .from('games')
+              .update({ voting_ended: false, result_message: null })
+              .eq('id', gameData.id);
+            if (resetGameErr) {
+              console.error('Error resetting game for new round:', resetGameErr);
+            } else {
+              setVotingEnded(false);
+              setResultMessage('');
+              setHasVoted(false);
+              setVotes([]);
+            }
+          } catch (e) {
+            console.error('Unexpected error resetting round:', e);
+          }
+        }
 
         setLoading(false);
 
@@ -375,7 +407,7 @@ export default function VotePage() {
 
         <ul className="grid grid-cols-2 gap-4 w-full max-w-md">
         {players
-            .filter(p => !p.is_dead) // Only show alive players as tiles
+            .filter(p => !p.is_dead && !p.voted_out) // Only show alive and not voted out players
             .map(p => (
             <li
                 key={p.id}
