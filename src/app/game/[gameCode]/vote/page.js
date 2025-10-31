@@ -25,6 +25,7 @@ export default function VotePage() {
 
   useEffect(() => {
     let votesChannel, eventsChannel, gamesChannel;
+    let pollIntervalId;
 
     const init = async () => {
       try {
@@ -169,7 +170,55 @@ export default function VotePage() {
           );
         await gamesChannel.subscribe();
 
+        // 8) If host and previous round ended, reset for new round
+        if (gameData.voting_ended && gameData.host_id === currentUser.id) {
+          try {
+            // Clear votes from previous round
+            const { error: clearVotesErr } = await supabase
+              .from('votes')
+              .delete()
+              .eq('game_id', gameData.id);
+            if (clearVotesErr) {
+              console.error('Error clearing previous votes:', clearVotesErr);
+            }
+
+            // Reset game flags for new round
+            const { error: resetGameErr } = await supabase
+              .from('games')
+              .update({ voting_ended: false, result_message: null })
+              .eq('id', gameData.id);
+            if (resetGameErr) {
+              console.error('Error resetting game for new round:', resetGameErr);
+            } else {
+              setVotingEnded(false);
+              setResultMessage('');
+              setHasVoted(false);
+              setVotes([]);
+            }
+          } catch (e) {
+            console.error('Unexpected error resetting round:', e);
+          }
+        }
+
         setLoading(false);
+
+        // 8) Polling fallback: periodically check for a vote_result until received
+        pollIntervalId = setInterval(async () => {
+          if (!gameData?.id) return;
+          if (votingEnded) return;
+          const { data: latest, error: latestErr } = await supabase
+            .from('game_events')
+            .select('*')
+            .eq('game_id', gameData.id)
+            .eq('type', 'vote_result')
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (!latestErr && latest) {
+            setResultMessage(latest.details ?? '');
+            setVotingEnded(true);
+          }
+        }, 2000);
       } catch (err) {
         console.error('Error initializing vote page:', err);
         setLoading(false);
@@ -182,31 +231,9 @@ export default function VotePage() {
       if (votesChannel) supabase.removeChannel(votesChannel).catch(() => {});
       if (eventsChannel) supabase.removeChannel(eventsChannel).catch(() => {});
       if (gamesChannel) supabase.removeChannel(gamesChannel).catch(() => {});
-
-      // Host-only: prepare next round AFTER leaving the vote room
-      // If the round just ended, clear votes and reset game so the room is ready next time
-      if (isHost && votingEnded && game?.id) {
-        (async () => {
-          try {
-            const { error: clearVotesErr } = await supabase
-              .from('votes')
-              .delete()
-              .eq('game_id', game.id);
-            if (clearVotesErr) console.error('Cleanup: error clearing votes:', clearVotesErr);
-
-            const { error: resetGameErr } = await supabase
-              .from('games')
-              .update({ voting_ended: false, result_message: null })
-              .eq('id', game.id);
-            if (resetGameErr) console.error('Cleanup: error resetting game:', resetGameErr);
-          } catch (e) {
-            console.error('Cleanup: unexpected error preparing next round:', e);
-          }
-        })();
-      }
+      if (pollIntervalId) clearInterval(pollIntervalId);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gameCode, router]);
+  }, [gameCode, router, votingEnded]);
 
   const handleCastVote = async () => {
     if (!selectedPlayerId) {
