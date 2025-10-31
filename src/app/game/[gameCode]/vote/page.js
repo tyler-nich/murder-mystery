@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { createClient } from '@supabase/supabase-js';
 
@@ -16,22 +16,16 @@ export default function VotePage() {
   const [players, setPlayers] = useState([]);
   const [user, setUser] = useState(null);
   const [selectedPlayerId, setSelectedPlayerId] = useState(null);
-  const [votes, setVotes] = useState([]); // raw vote rows
+  const [votes, setVotes] = useState([]);
   const [isHost, setIsHost] = useState(false);
   const [votingEnded, setVotingEnded] = useState(false);
   const [resultMessage, setResultMessage] = useState('');
   const [loading, setLoading] = useState(true);
-  const [hasVoted, setHasVoted] = useState(false); // Track if the user has voted
-
-  // Dynamically calculate votesCast
-  const votesCast = useMemo(() => {
-    const count = new Set(votes.map(v => v.voter_id)).size;
-    console.log('Votes cast updated:', count); // Debugging log
-    return count;
-  }, [votes]);
+  const [hasVoted, setHasVoted] = useState(false);
 
   useEffect(() => {
-    let votesChannel, gamesChannel;
+    let votesChannel, eventsChannel, gamesChannel;
+    let pollIntervalId;
 
     const init = async () => {
       try {
@@ -44,7 +38,7 @@ export default function VotePage() {
         }
         setUser(currentUser);
 
-        // 2) Resolve game by code -> get UUID
+        // 2) Fetch game details
         const { data: gameData, error: gameErr } = await supabase
           .from('games')
           .select('*')
@@ -59,30 +53,31 @@ export default function VotePage() {
         setGame(gameData);
         setIsHost(gameData.host_id === currentUser.id);
 
-        // Check if voting has already ended
+        // If result already set on game, reflect immediately
         if (gameData.voting_ended) {
-          setResultMessage(gameData.result_message);
+          setResultMessage(gameData.result_message || '');
           setVotingEnded(true);
-          return;
         }
 
-        // 3) Fetch all players for the game
+        // Fetch all players (alive and dead)
         const { data: playersData, error: playersErr } = await supabase
-          .from('players')
-          .select('*')
-          .eq('game_id', gameData.id);
+        .from('players')
+        .select('*')
+        .eq('game_id', gameData.id);
+
         if (playersErr) {
-          console.error('Error fetching players:', playersErr);
-          setPlayers([]);
+        console.error('Error fetching players:', playersErr);
+        setPlayers([]);
         } else {
-          setPlayers(playersData || []);
+        setPlayers(playersData || []);
         }
 
-        // 4) Fetch existing votes for this game
+        // 4) Fetch existing votes
         const { data: votesData, error: votesErr } = await supabase
           .from('votes')
           .select('*')
           .eq('game_id', gameData.id);
+
         if (votesErr) {
           console.error('Error fetching votes:', votesErr);
           setVotes([]);
@@ -96,7 +91,7 @@ export default function VotePage() {
           setHasVoted(true);
         }
 
-        // 5) Subscribe to new votes (realtime)
+        // 5) Subscribe to new votes
         votesChannel = supabase
           .channel(`votes-game-${gameData.id}`)
           .on(
@@ -108,15 +103,52 @@ export default function VotePage() {
               filter: `game_id=eq.${gameData.id}`,
             },
             (payload) => {
-              console.log('New vote received:', payload.new); // Debugging log
-              setVotes(prev => [...prev, payload.new]); // Update votes state
+              setVotes(prev => [...prev, payload.new]);
             }
           );
         await votesChannel.subscribe();
 
-        // 6) Subscribe to game updates (realtime)
+        // 6) Check for existing vote result (covers late arrivals and reloads)
+        const { data: latestEvent, error: latestEventErr } = await supabase
+          .from('game_events')
+          .select('*')
+          .eq('game_id', gameData.id)
+          .eq('type', 'vote_result')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (latestEventErr) {
+          console.error('Error fetching latest game event:', latestEventErr);
+        } else if (latestEvent) {
+          setResultMessage(latestEvent.details ?? '');
+          setVotingEnded(true);
+        }
+
+        // 7) Subscribe to game events for voting results (real-time updates)
+        eventsChannel = supabase
+          .channel(`game-events-${gameData.id}`)
+          .on(
+            'postgres_changes',
+            {
+              event: 'INSERT',
+              schema: 'public',
+              table: 'game_events',
+              filter: `game_id=eq.${gameData.id}`,
+            },
+            (payload) => {
+              console.log('Game event received', payload.new);
+              if (payload?.new?.type === 'vote_result') {
+                setResultMessage(payload.new.details);
+                setVotingEnded(true);
+              }
+            }
+          );
+        await eventsChannel.subscribe();
+
+        // 7b) Subscribe to games updates for this game to get result_message/voting_ended
         gamesChannel = supabase
-          .channel(`games-updates-${gameData.id}`)
+          .channel(`games-${gameData.id}`)
           .on(
             'postgres_changes',
             {
@@ -126,18 +158,37 @@ export default function VotePage() {
               filter: `id=eq.${gameData.id}`,
             },
             (payload) => {
-              console.log('Game update received:', payload.new); // Debugging log
-              if (payload.new.voting_ended) {
-                setResultMessage(payload.new.result_message); // Update result message
-                setVotingEnded(true); // Mark voting as ended
+              const updated = payload?.new;
+              if (!updated) return;
+              if (updated.voting_ended) {
+                setResultMessage(updated.result_message || '');
+                setVotingEnded(true);
               }
             }
           );
         await gamesChannel.subscribe();
 
         setLoading(false);
+
+        // 8) Polling fallback: periodically check for a vote_result until received
+        pollIntervalId = setInterval(async () => {
+          if (!gameData?.id) return;
+          if (votingEnded) return;
+          const { data: latest, error: latestErr } = await supabase
+            .from('game_events')
+            .select('*')
+            .eq('game_id', gameData.id)
+            .eq('type', 'vote_result')
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (!latestErr && latest) {
+            setResultMessage(latest.details ?? '');
+            setVotingEnded(true);
+          }
+        }, 2000);
       } catch (err) {
-        console.error('init error', err);
+        console.error('Error initializing vote page:', err);
         setLoading(false);
       }
     };
@@ -146,99 +197,161 @@ export default function VotePage() {
 
     return () => {
       if (votesChannel) supabase.removeChannel(votesChannel).catch(() => {});
+      if (eventsChannel) supabase.removeChannel(eventsChannel).catch(() => {});
       if (gamesChannel) supabase.removeChannel(gamesChannel).catch(() => {});
+      if (pollIntervalId) clearInterval(pollIntervalId);
     };
-  }, [gameCode, router]);
+  }, [gameCode, router, votingEnded]);
 
   const handleCastVote = async () => {
     if (!selectedPlayerId) {
-        alert('Select someone to vote for first.');
-        return;
-    }
-    if (!game) {
-        alert('Game not loaded yet.');
-        return;
+      alert('Select someone to vote for first.');
+      return;
     }
 
     const voter = players.find(p => p.user_id === user?.id);
     if (!voter) {
-        alert('You are not registered as a player in this game.');
-        return;
+      alert('You are not registered as a player in this game.');
+      return;
     }
 
     if (votes.some(v => v.voter_id === voter.id)) {
-        alert('You already voted.');
-        return;
+      alert('You already voted.');
+      return;
     }
 
     try {
-        const payload = {
+      const payload = {
         game_id: game.id,
         voter_id: voter.id,
-        voted_for: selectedPlayerId
-        };
+        voted_for: selectedPlayerId,
+      };
 
-        const { data, error } = await supabase
-        .from('votes')
-        .insert(payload)
-        .select()
-        .single();
-
-        if (error) {
-        console.error('Error submitting vote:', error);
-        alert(error.message || 'Failed to submit vote.');
-        return;
-        }
-
-        setVotes(prev => [...prev, data]);
-        setSelectedPlayerId(null);
-        setHasVoted(true); // Mark the user as having voted
-    } catch (err) {
-        console.error('Unexpected error submitting vote:', err);
-        alert('Unexpected error submitting vote.');
-    }
-    };
-
-  const endVoting = async () => {
-    const tally = {};
-    votes.forEach(v => {
-      tally[v.voted_for] = (tally[v.voted_for] || 0) + 1;
-    });
-
-    const maxVotes = Math.max(...Object.values(tally));
-    const winners = Object.entries(tally).filter(([_, count]) => count === maxVotes);
-
-    let resultMessage;
-    if (winners.length !== 1) {
-      resultMessage = 'It’s a tie! No one was caught.';
-    } else {
-      const [winnerId] = winners[0];
-      const winner = players.find(p => p.id === winnerId);
-
-      if (winner?.is_murderer) {
-        resultMessage = `You caught the Murderer! It was ${winner.name}.`;
-      } else {
-        resultMessage = `${winner.name} was not the Murderer. You failed.`;
-      }
-    }
-
-    try {
-      const { error } = await supabase
-        .from('games')
-        .update({ voting_ended: true, result_message: resultMessage })
-        .eq('id', game.id);
-
+      const { error } = await supabase.from('votes').insert(payload);
       if (error) {
-        console.error('Error ending voting:', error);
-        alert('Failed to end voting.');
+        console.error('Error casting vote:', error);
+        alert('Failed to cast vote.');
       } else {
-        setResultMessage(resultMessage);
-        setVotingEnded(true);
+        setHasVoted(true);
       }
     } catch (err) {
-      console.error('Unexpected error ending voting:', err);
+      console.error('Unexpected error casting vote:', err);
     }
   };
+
+    const handleGetResults = async () => {
+    try {
+        // Prevent duplicate results via games.voting_ended
+        const { data: currentGame, error: gameReadErr } = await supabase
+          .from('games')
+          .select('*')
+          .eq('id', game.id)
+          .single();
+        if (gameReadErr) {
+          console.error('Error reading game before results:', gameReadErr);
+        } else if (currentGame?.voting_ended) {
+          setResultMessage(currentGame.result_message || '');
+          setVotingEnded(true);
+          return;
+        }
+
+        // Prevent duplicate results: if a vote_result already exists, do nothing
+        const { data: existingResult, error: existingErr } = await supabase
+          .from('game_events')
+          .select('*')
+          .eq('game_id', game.id)
+          .eq('type', 'vote_result')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (!existingErr && existingResult) {
+          setResultMessage(existingResult.details ?? '');
+          setVotingEnded(true);
+          return;
+        }
+
+        // Fetch latest votes from DB to avoid stale state
+        const { data: freshVotes, error: votesFetchErr } = await supabase
+          .from('votes')
+          .select('*')
+          .eq('game_id', game.id);
+
+        if (votesFetchErr) {
+          console.error('Error fetching votes for results:', votesFetchErr);
+          return;
+        }
+
+        const tally = {};
+        (freshVotes || []).forEach((v) => {
+          const key = String(v.voted_for);
+          tally[key] = (tally[key] || 0) + 1;
+        });
+
+        const counts = Object.values(tally);
+        if (counts.length === 0) {
+          const { error: insertNoVotesErr } = await supabase.from('game_events').insert({
+            game_id: game.id,
+            victim_id: null,
+            type: 'vote_result',
+            details: 'No votes were cast.',
+          });
+          if (insertNoVotesErr) console.error('Error inserting no-votes event:', insertNoVotesErr);
+
+          // Also update games to broadcast result
+          const { error: gameUpdateNoVotesErr } = await supabase
+            .from('games')
+            .update({ voting_ended: true, result_message: 'No votes were cast.' })
+            .eq('id', game.id);
+          if (gameUpdateNoVotesErr) console.error('Error updating game no-votes:', gameUpdateNoVotesErr);
+          return;
+        }
+
+        const maxVotes = Math.max(...counts);
+        const winners = Object.entries(tally).filter(([_, count]) => count === maxVotes);
+
+        let resultMessage;
+        let victimId = null; // Default to null in case of a tie
+
+        if (winners.length !== 1) {
+          resultMessage = 'It was a tie, keep playing!';
+        } else {
+          const [winnerIdStr] = winners[0];
+          victimId = winnerIdStr; // Set the victim_id to the player with the most votes
+          const winner = players.find(p => String(p.id) === winnerIdStr);
+
+          if (winner?.is_murderer) {
+              resultMessage = `Congrats! You caught the Murderer, it was ${winner?.name ?? 'Unknown'}.`;
+          } else {
+              resultMessage = `Boo! You failed, it wasn't ${winner?.name ?? 'Unknown'}.`;
+          }
+
+          // Update the player as voted out
+          await supabase
+              .from('players')
+              .update({ voted_out: true })
+              .eq('id', winnerIdStr);
+        }
+
+        // Log the result in the game_events table
+        const { error: insertEventErr } = await supabase.from('game_events').insert({
+          game_id: game.id,
+          victim_id: victimId, // Include the victim_id in the payload
+          type: 'vote_result',
+          details: resultMessage,
+        });
+        if (insertEventErr) console.error('Error inserting game event:', insertEventErr);
+
+        // Update game to reflect final state and push to all clients
+        const { error: gameUpdateErr } = await supabase
+          .from('games')
+          .update({ voting_ended: true, result_message: resultMessage })
+          .eq('id', game.id);
+        if (gameUpdateErr) console.error('Error updating game result:', gameUpdateErr);
+    } catch (err) {
+        console.error('Error getting results:', err);
+    }
+    };
 
   if (loading) return <p className="p-4 text-white">Loading...</p>;
 
@@ -260,18 +373,21 @@ export default function VotePage() {
     <main className="min-h-screen bg-black text-white flex flex-col items-center justify-center px-6">
       <h1 className="text-3xl font-bold mb-6">Vote for the Murderer</h1>
 
-      <ul className="grid grid-cols-2 gap-4 w-full max-w-md">
-        {players.filter(p => !p.is_dead).map(p => (
-          <li
-            key={p.id}
-            className={`border-2 rounded p-4 text-center cursor-pointer transition
-              ${selectedPlayerId === p.id ? 'bg-red-600 text-white' : 'bg-gray-900 text-gray-300'}`}
-            onClick={() => setSelectedPlayerId(p.id)}
-          >
-            {p.name}
-          </li>
-        ))}
-      </ul>
+        <ul className="grid grid-cols-2 gap-4 w-full max-w-md">
+        {players
+            .filter(p => !p.is_dead) // Only show alive players as tiles
+            .map(p => (
+            <li
+                key={p.id}
+                className={`border-2 rounded p-4 text-center cursor-pointer transition
+                ${selectedPlayerId === p.id ? 'bg-blue-600 text-white' : 'bg-gray-900 text-gray-300'}
+                ${hasVoted ? 'bg-green-600 text-white' : ''}`}
+                onClick={() => !hasVoted && setSelectedPlayerId(p.id)}
+            >
+                {p.name}
+            </li>
+            ))}
+        </ul>
 
       <div className="mt-6 flex flex-col items-center gap-3 w-full max-w-md">
         {!hasVoted && (
@@ -279,16 +395,16 @@ export default function VotePage() {
             onClick={handleCastVote}
             className="w-full bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded text-lg font-semibold transition"
           >
-            Cast Vote
+            Vote
           </button>
         )}
 
         {isHost && (
           <button
-            onClick={endVoting}
+            onClick={handleGetResults}
             className="w-full mt-2 bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded text-lg font-semibold transition"
           >
-            End Vote ({votesCast}/{players.length} votes cast)
+            Get Results
           </button>
         )}
       </div>
