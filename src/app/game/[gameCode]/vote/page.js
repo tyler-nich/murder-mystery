@@ -53,10 +53,15 @@ export default function VotePage() {
         setGame(gameData);
         setIsHost(gameData.host_id === currentUser.id);
 
-        // If result already set on game, reflect immediately
+        // If result already set on game, reflect immediately; otherwise ensure fresh round state
         if (gameData.voting_ended) {
           setResultMessage(gameData.result_message || '');
           setVotingEnded(true);
+        } else {
+          setVotingEnded(false);
+          setResultMessage('');
+          setHasVoted(false);
+          setSelectedPlayerId(null);
         }
 
         // Fetch all players (alive and dead)
@@ -87,8 +92,10 @@ export default function VotePage() {
 
         // Check if the user has already voted
         const voter = playersData.find(p => p.user_id === currentUser.id);
-        if (votesData.some(v => v.voter_id === voter?.id)) {
+        if (voter && (votesData || []).some(v => v.voter_id === voter.id)) {
           setHasVoted(true);
+        } else {
+          setHasVoted(false);
         }
 
         // 5) Subscribe to new votes
