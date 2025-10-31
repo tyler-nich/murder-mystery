@@ -202,28 +202,30 @@ export default function VotePage() {
 
         setLoading(false);
 
-        // 8) Polling fallback: periodically check for a vote_result until received
-        pollIntervalId = setInterval(async () => {
-          if (!gameData?.id) return;
-          if (votingEnded) return;
-          const { data: latest, error: latestErr } = await supabase
-            .from('game_events')
-            .select('*')
-            .eq('game_id', gameData.id)
-            .eq('type', 'vote_result')
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .maybeSingle();
-          if (!latestErr && latest) {
-            setResultMessage(latest.details ?? '');
-            setVotingEnded(true);
-          }
-        }, 2000);
+        // 8) Polling fallback ONLY if the round is ended (avoid showing stale past results)
+        if (gameData.voting_ended) {
+          pollIntervalId = setInterval(async () => {
+            if (!gameData?.id) return;
+            if (votingEnded) return;
+            const { data: latest, error: latestErr } = await supabase
+              .from('game_events')
+              .select('*')
+              .eq('game_id', gameData.id)
+              .eq('type', 'vote_result')
+              .order('created_at', { ascending: false })
+              .limit(1)
+              .maybeSingle();
+            if (!latestErr && latest) {
+              setResultMessage(latest.details ?? '');
+              setVotingEnded(true);
+            }
+          }, 2000);
+        }
       } catch (err) {
         console.error('Error initializing vote page:', err);
         setLoading(false);
       }
-    };
+     };
 
     init();
 
@@ -233,7 +235,30 @@ export default function VotePage() {
       if (gamesChannel) supabase.removeChannel(gamesChannel).catch(() => {});
       if (pollIntervalId) clearInterval(pollIntervalId);
     };
-  }, [gameCode, router, votingEnded]);
+     // When leaving the page AFTER results, reset for next round
+     return () => {
+       if (pollIntervalId) clearInterval(pollIntervalId);
+       if (votingEnded && game?.id) {
+         (async () => {
+           try {
+             // Reset game flags for a new round
+             await supabase
+               .from('games')
+               .update({ voting_ended: false, result_message: null })
+               .eq('id', game.id);
+
+             // Clear previous votes so everyone can vote again
+             await supabase
+               .from('votes')
+               .delete()
+               .eq('game_id', game.id);
+           } catch (e) {
+             console.error('Cleanup error resetting round:', e);
+           }
+         })();
+       }
+     };
+   }, [gameCode, router, votingEnded, game?.id]);
 
   const handleCastVote = async () => {
     if (!selectedPlayerId) {
