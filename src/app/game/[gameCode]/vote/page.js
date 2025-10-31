@@ -327,20 +327,24 @@ export default function VotePage() {
 
         const counts = Object.values(tally);
         if (counts.length === 0) {
+          const noVotesMessage = 'No votes were cast.';
           const { error: insertNoVotesErr } = await supabase.from('game_events').insert({
             game_id: game.id,
             victim_id: null,
             type: 'vote_result',
-            details: 'No votes were cast.',
+            details: noVotesMessage,
           });
           if (insertNoVotesErr) console.error('Error inserting no-votes event:', insertNoVotesErr);
 
           // Also update games to broadcast result
           const { error: gameUpdateNoVotesErr } = await supabase
             .from('games')
-            .update({ voting_ended: true, result_message: 'No votes were cast.' })
+            .update({ voting_ended: true, result_message: noVotesMessage })
             .eq('id', game.id);
           if (gameUpdateNoVotesErr) console.error('Error updating game no-votes:', gameUpdateNoVotesErr);
+          // Ensure host immediately sees results screen
+          setResultMessage(noVotesMessage);
+          setVotingEnded(true);
           return;
         }
 
@@ -385,6 +389,9 @@ export default function VotePage() {
           .update({ voting_ended: true, result_message: resultMessage })
           .eq('id', game.id);
         if (gameUpdateErr) console.error('Error updating game result:', gameUpdateErr);
+        // Ensure host immediately sees results screen without waiting for realtime
+        setResultMessage(resultMessage);
+        setVotingEnded(true);
     } catch (err) {
         console.error('Error getting results:', err);
     }
