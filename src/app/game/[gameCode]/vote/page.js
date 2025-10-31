@@ -53,15 +53,10 @@ export default function VotePage() {
         setGame(gameData);
         setIsHost(gameData.host_id === currentUser.id);
 
-        // If result already set on game, reflect immediately; otherwise ensure fresh round state
+        // If result already set on game, reflect immediately
         if (gameData.voting_ended) {
           setResultMessage(gameData.result_message || '');
           setVotingEnded(true);
-        } else {
-          setVotingEnded(false);
-          setResultMessage('');
-          setHasVoted(false);
-          setSelectedPlayerId(null);
         }
 
         // Fetch all players (alive and dead)
@@ -92,10 +87,8 @@ export default function VotePage() {
 
         // Check if the user has already voted
         const voter = playersData.find(p => p.user_id === currentUser.id);
-        if (voter && (votesData || []).some(v => v.voter_id === voter.id)) {
+        if (votesData.some(v => v.voter_id === voter?.id)) {
           setHasVoted(true);
-        } else {
-          setHasVoted(false);
         }
 
         // 5) Subscribe to new votes
@@ -209,30 +202,28 @@ export default function VotePage() {
 
         setLoading(false);
 
-        // 8) Polling fallback ONLY if the round is ended (avoid showing stale past results)
-        if (gameData.voting_ended) {
-          pollIntervalId = setInterval(async () => {
-            if (!gameData?.id) return;
-            if (votingEnded) return;
-            const { data: latest, error: latestErr } = await supabase
-              .from('game_events')
-              .select('*')
-              .eq('game_id', gameData.id)
-              .eq('type', 'vote_result')
-              .order('created_at', { ascending: false })
-              .limit(1)
-              .maybeSingle();
-            if (!latestErr && latest) {
-              setResultMessage(latest.details ?? '');
-              setVotingEnded(true);
-            }
-          }, 2000);
-        }
+        // 8) Polling fallback: periodically check for a vote_result until received
+        pollIntervalId = setInterval(async () => {
+          if (!gameData?.id) return;
+          if (votingEnded) return;
+          const { data: latest, error: latestErr } = await supabase
+            .from('game_events')
+            .select('*')
+            .eq('game_id', gameData.id)
+            .eq('type', 'vote_result')
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (!latestErr && latest) {
+            setResultMessage(latest.details ?? '');
+            setVotingEnded(true);
+          }
+        }, 2000);
       } catch (err) {
         console.error('Error initializing vote page:', err);
         setLoading(false);
       }
-     };
+    };
 
     init();
 
@@ -242,30 +233,7 @@ export default function VotePage() {
       if (gamesChannel) supabase.removeChannel(gamesChannel).catch(() => {});
       if (pollIntervalId) clearInterval(pollIntervalId);
     };
-     // When leaving the page AFTER results, reset for next round
-     return () => {
-       if (pollIntervalId) clearInterval(pollIntervalId);
-       if (votingEnded && game?.id) {
-         (async () => {
-           try {
-             // Reset game flags for a new round
-             await supabase
-               .from('games')
-               .update({ voting_ended: false, result_message: null })
-               .eq('id', game.id);
-
-             // Clear previous votes so everyone can vote again
-             await supabase
-               .from('votes')
-               .delete()
-               .eq('game_id', game.id);
-           } catch (e) {
-             console.error('Cleanup error resetting round:', e);
-           }
-         })();
-       }
-     };
-   }, [gameCode, router, votingEnded, game?.id]);
+  }, [gameCode, router, votingEnded]);
 
   const handleCastVote = async () => {
     if (!selectedPlayerId) {
