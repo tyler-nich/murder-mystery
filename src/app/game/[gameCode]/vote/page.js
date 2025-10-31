@@ -391,12 +391,46 @@ export default function VotePage() {
     return (
       <main className="min-h-screen bg-black text-white flex flex-col items-center justify-center px-6">
         <h1 className="text-3xl font-bold mb-6">{resultMessage}</h1>
-        <button
-          onClick={() => router.push(`/game/${gameCode}`)}
-          className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded text-lg font-semibold transition"
-        >
-          Return to Game
-        </button>
+        <div className="flex flex-col gap-3 w-full max-w-md">
+          <button
+            onClick={() => router.push(`/game/${gameCode}`)}
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded text-lg font-semibold transition"
+          >
+            Return to Game
+          </button>
+          {isHost && (
+            <button
+              onClick={async () => {
+                try {
+                  if (!game?.id) return;
+                  const { error: clearVotesErr } = await supabase
+                    .from('votes')
+                    .delete()
+                    .eq('game_id', game.id);
+                  if (clearVotesErr) console.error('Error clearing votes:', clearVotesErr);
+
+                  const { error: resetGameErr } = await supabase
+                    .from('games')
+                    .update({ voting_ended: false, result_message: null })
+                    .eq('id', game.id);
+                  if (resetGameErr) console.error('Error resetting game flags:', resetGameErr);
+
+                  // Local UI reset
+                  setVotingEnded(false);
+                  setResultMessage('');
+                  setHasVoted(false);
+                  setSelectedPlayerId(null);
+                  setVotes([]);
+                } catch (e) {
+                  console.error('Unexpected error clearing votes/resetting round:', e);
+                }
+              }}
+              className="w-full bg-gray-700 hover:bg-gray-600 text-white px-6 py-3 rounded text-lg font-semibold transition"
+            >
+              Clear Vote Table
+            </button>
+          )}
+        </div>
       </main>
     );
   }
@@ -413,7 +447,7 @@ export default function VotePage() {
                 key={p.id}
                 className={`border-2 rounded p-4 text-center cursor-pointer transition
                 ${selectedPlayerId === p.id ? 'bg-blue-600 text-white' : 'bg-gray-900 text-gray-300'}
-                ${hasVoted ? 'bg-green-600 text-white' : ''}`}
+                ${hasVoted && selectedPlayerId === p.id ? 'bg-green-600 text-white' : ''}`}
                 onClick={() => !hasVoted && setSelectedPlayerId(p.id)}
             >
                 {p.name}
