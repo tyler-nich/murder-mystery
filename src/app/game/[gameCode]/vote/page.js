@@ -262,21 +262,6 @@ export default function VotePage() {
           return;
         }
 
-        // Prevent duplicate results: if a vote_result already exists, do nothing
-        const { data: existingResult, error: existingErr } = await supabase
-          .from('game_events')
-          .select('*')
-          .eq('game_id', game.id)
-          .eq('type', 'vote_result')
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle();
-
-        if (!existingErr && existingResult) {
-          setResultMessage(existingResult.details ?? '');
-          setVotingEnded(true);
-          return;
-        }
 
         // Fetch latest votes from DB to avoid stale state
         const { data: freshVotes, error: votesFetchErr } = await supabase
@@ -390,6 +375,14 @@ export default function VotePage() {
                     .delete()
                     .eq('game_id', game.id);
                   if (clearVotesErr) console.error('Error clearing votes:', clearVotesErr);
+
+                  // Clear old vote_result events
+                  const { error: clearEventsErr } = await supabase
+                    .from('game_events')
+                    .delete()
+                    .eq('game_id', game.id)
+                    .eq('type', 'vote_result');
+                  if (clearEventsErr) console.error('Error clearing vote_result events:', clearEventsErr);
 
                   const { error: resetGameErr } = await supabase
                     .from('games')
